@@ -1,75 +1,117 @@
+---
 title: "Assignment 2 Text Analytics"
 author: "Robbert Batenburg"
 date: "2024-04-17"
 output: pdf_document
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-
-
-skip_slow <- TRUE
-
-# Set the maximum number of rows to be printed
-options(max.print = 10000)
-
+```{r, include=FALSE, echo=TRUE, eval = FALSE}
 library(dplyr)
-library(tidyr)
-library(text2vec)
-library(tidytext)
 library(ggplot2)
+library(tidytext)
 library(SnowballC)
-
+library(syuzhet)
+library(tidyr)
+library(qdap)
+library(mgsub)
+library(tm)
+library(caret)
+library(randomForest)
+library(stringr)
+library(plotmo)
+library(glmnet)
+library(pROC)
+library(kableExtra)
+library(gridExtra)
+load("reviews_with_predictor_variables.RData")
 ```
-
-```{r data}
-#load data
-setwd("C:/Users/robbe/OneDrive/uni/Master DSMA/Text Analysis/Assignment 2 RMarkdown")
-
-# Load data
-#disney_unique <- load(file = "disney_stemmed_new.RData")
-```
-
-
-```{r}
-
-# Create small dataset to work with
-#reviews_df <- disney_unique[disney_unique$Branch == "Disneyland_HongKong",]
-#reviews_df <- reviews_df[1:10000,]
-#reviews_df$Description <- reviews_df$Review_Text
-
-```
-
-## Word stemming
-
-```{r , echo=FALSE, message=FALSE}
-
-# Apply word stemming
-#for (j in 1:nrow(reviews_df)) {
-  # Also remove stop words
-#  stemmed_description<-  anti_join((reviews_df[j,] %>% unnest_tokens(word,Description, drop=FALSE,to_lower=TRUE) ),stop_words)
-
-#    stemmed_description<-  ((reviews_df[j,] %>% unnest_tokens(word,Description, drop=FALSE,to_lower=TRUE) ))
-#    stemmed_description<-(wordStem(stemmed_description[,"word"], language = "porter"))
-
-    # Add to dataframe
-#    reviews_df[j, "stemmed_reviewtext"] <- paste(stemmed_description, collapse = " ")
-
-#}
-#print("done")
-
-#stemmed_reviews_df_with_stop <- reviews_df
-
-#save(stemmed_reviews_df_with_stop , file = "stemmed_reviews_df_with_stop.Rdata")
-
-
-  load(file = "stemmed_reviews_df_with_stop.Rdata")
-  stemmed_reviews_df_with_stop -> reviews_df
+```{r, message = FALSE, warning = FALSE, echo = FALSE}
+library(kableExtra)
 
 ```
 
 
-```{r}
+```{r, include=FALSE, message = FALSE}
+load("whole_environment.RData")
+
+```
+
+
+```{r, include=FALSE, message = FALSE, warning = FALSE, eval = FALSE}
+reviews_df <- read.csv("DisneylandReviews.csv")
+reviews_df <- reviews_df[reviews_df$Branch == "Disneyland_HongKong",]
+
+names(reviews_df)[1] <- "User_ID"
+names(reviews_df)[5] <- "reviewtext"
+reviews_df <- reviews_df[, c(1, 2, 5, 6)]
+
+reviews_df$reviewtext <- as.character(reviews_df$reviewtext)  %>%
+  tolower() %>%
+  {gsub(":( |-|o)*\\("," SADSMILE ", .)} %>%        # Find :( or :-( or : ( or :o(
+  {gsub(":( |-|o)*\\)"," HAPPYSMILE ", .)} %>%      # Find :) or :-) or : ) or :o)
+  {gsub("\\n", " ", .)} %>%                        # Remove \n (newline)     
+  {gsub("[?!]+",".",.)} %>%                        # Remove ? and ! (replace by single .)
+  {gsub("[\\[\\*\\]]*"," ",.)} %>%                 # Remove [ and ] * (replace by single space)
+  {gsub("(\"| |\\$)-+\\.-+"," number ", .)} %>%    # Find numbers
+  {gsub("(-+:)*-+ *am"," timeam", .)} %>%          # Find time AM
+  {gsub("(-+:)*-+ *pm"," timepm", .)} %>%          # Find time PM
+  {gsub("-+:-+","time", .)} %>%                    # Find general time
+  {gsub("( |\\$)--+"," number ", .)} %>%           # Find remaining numbers
+  {gsub("-"," ", .)} %>%                           # Remove all -
+  {gsub("\"+"," ", .)} %>%                         # Remove all "
+  {gsub(";+"," ", .)} %>%                          # Remove excess ;
+  {gsub("\\.+","\\. ", .)} %>%                     # Remove excess .
+  {gsub(" +"," ", .)} %>%                          # Remove excess spaces
+  {gsub("\\. \\.","\\. ", .)}                      # Remove space between periods
+
+reviews_df_backup <- reviews_df
+
+
+## REMOVE STOPWORDS ##
+
+ignorelist = stop_words %>% filter(!word %in% c("no", "not", "never"))
+
+for (j in 1:nrow(reviews_df)) {
+  
+  words <- reviews_df[j,] %>% 
+    unnest_tokens(word, reviewtext) %>% 
+    anti_join(ignorelist, by="word")
+  
+  stemmed <- wordStem(words[ , "word"], language = "porter")
+  reviews_df[j, "stemmed_reviewtext_with_no"] <- paste(stemmed, collapse = " ")
+  
+  # Again, but with ignoring all stopwords
+  nostopwords <- reviews_df[j,] %>% unnest_tokens(word, reviewtext) %>%
+    anti_join( stop_words, by = "word")
+  stemmed <- wordStem(nostopwords[ , "word"], language = "porter")
+  
+  # Add variables to data
+  reviews_df[j, "stemmed_reviewtext"] <- paste(stemmed, collapse = " ")
+  reviews_df[j, "reviewtext"] <- paste((nostopwords$word), collapse = " ")
+  reviews_df[j, "Nr_of_words"]<- nrow(nostopwords)
+}
+
+
+
+### REMOVE (IN)FREQUENT WORDS ###
+
+
+# Get word frequency after stemming
+frequency  <- reviews_df %>% unnest_tokens(word, stemmed_reviewtext) %>% dplyr::count(word, sort=TRUE)
+
+# Select very frequent or infrequent words
+infrequent <- frequency %>% filter(n < 0.01*nrow(reviews_df))
+frequent   <- frequency %>% filter(word %in% c("ride", "dai", "park", 'disneyland', "hong", "kong", "hk", "disnei")) # you can extend this list with word you want to remove
+toremove   <- full_join(frequent, infrequent, by = "word") # combining these word lists
+
+# Remove common words from stemmed reviewtext
+for (j in 1:nrow(reviews_df)) {
+  tmp <-  anti_join( (reviews_df[j,] %>% unnest_tokens(word, stemmed_reviewtext) ), toremove, by = "word")
+  reviews_df[j,"stemmed_reviewtext"] <- paste(tmp[, "word"], collapse = " ")
+}
+```
+
+```{r, include = FALSE, message = FALSE, warning = FALSE, eval = FALSE}
 # create iterator over list of text items
 it = itoken(reviews_df$stemmed_reviewtext)
 
@@ -84,29 +126,15 @@ tcm = create_tcm(it, v_vect, skip_grams_window = 8L, skip_grams_window_context =
 ```
 
 
-```{r}
-#Create wordlist
-
-wordlist = c("food", "lunch" ,  "restaur", "hotel", "magic", "wait", "attract", "parad", "bad", "disappoint", "ride", "fantast", "children")
-
-```
-
+```{r, include = FALSE, message = FALSE, warning = FALSE, eval = FALSE}
+# Create wordlist
+wordlist = c("food", "lunch" , "restaur", "attract", "bad", "disappoint", "ride", "fantast", "parad", "attract")
 
 # Create the GloVe model
-
-```{r}
-
 glove_model = GlobalVectors$new( x_max = 1000 , rank = 50) 
 # use maximum 1000 word co-occurrences in weight function
 # rank is the desired dimension for latent vectors
-```
 
-
-# Fit model and obtain results.
-
-# note that the glove_model construct is now also changed!
-
-```{r}
 # Fit the model using 200 stochastic gradient descent (SGD) iterations
 word_vectors = glove_model$fit_transform(tcm, n_iter = 200)
 
@@ -115,18 +143,8 @@ word_vectors_backup <- word_vectors # save as backup
 ```
 
 
-```{r}
-
-# Show first 50 dimensions
-t(word_vectors[wordlist[1:4],1:50])
-
-```
-
-
+```{r, include = FALSE, message = FALSE, warning = FALSE, eval = FALSE}
 # Determine pairwise word similarities
-
-```{r}
-
 similarity_matrix = sim2(word_vectors)
 print("a sample of the similarity matrix across words ")
 similarity_matrix[wordlist,wordlist]
@@ -135,40 +153,33 @@ nwords=nrow(similarity_matrix)
 ```
 
 
-## Finding similar words
 
-```{r}
+
+```{r, include = FALSE, message = FALSE, warning = FALSE, eval = FALSE}
 # vector to select first 10 and last 10 words
 top_bottom=c(1:10,(nwords-9):nwords)
-```
 
-```{r}
-# Select words with top 10 highest and lowest similarity score to curri
+# Select words with top 10 highest and lowest similarity score to fantast
 cc=sort(similarity_matrix[,"fantast"], decreasing=TRUE)
 print(data.frame(cc[top_bottom]))
 
 ```
 
 
+# Word embeddings
+
+To analyse the reviews about Disneyland Hong Kong, we will first use a GloVe algorithm to embed the words used in the reviews. The Glove model results in many vectors across different dimensions, or aiming in different "directions", which mathematically describe the meaning of the words. When words are similar to each other in a dimension, their vectors aim towards the same direction. This means that their values in this dimension are both either positive or both negative. Words that have a similar meaning, will have vectors close to each other in many dimensions.
+
+Table 1 shows a sample of the results of our GloVe model. The first and second rows show dimensions where bad and disappoint have the same direction and the opposite direction to fantast. These dimensions can help capture the difference between positive and negative sentiment. In addition, food, lunch and restaurant have negative directions in the first dimension. This direction therefore helps to capture the meaning of food. These food related terms also have the same direction as fantast and the opposite direction to bad and disappoint, which indicates that there is a positive sentiment about the food in Disneyland Honk Kong.
+
+We also examined words relating to the activities at the park. Specifically, we examined the words "ride", "parad" and "attract", representing different activities at the amusement park. The third row in table 2 shows the dimension along which these words are most similar, pointing to the importance of this dimension in describing the activities people can partake in at the park. Words with embeddings that have high values along this dimension are likely to be related to the activities in the amusement park.
+ 
+The first direction has the highest score for "food". In other words, the word embedding vector for "food" has the biggest (absolute) value in this dimension. Food has the higher semantic representation along this particular dimension. Other words with negative vectors in this dimension are more likely to have a related meaning towards food, because their semantic attribute in this dimension is similar.
 
 
 
-
-
-### REPORT
-
-Table 1 shows a similarity matrix of a sample of words. These similarities are measure across a range of dimensions. This shows that restaurant is very similar to lunch.
-This is to be expected because a restaurant sells lunch. These similarity scores are determined by many different dimensions, some of which are shown in Table 2. 
-When words are similar to each other in a dimension, the values for this dimension are either both positive or both negative. 
-Table 3 shows dimensions where bad and disappoint have the same direction and the opposite direction to fantast. 
-These three dimensions can help capture the different between positive and negative sentiment. 
-Table 4 shows one of the previous directions together with the values for food, lunch and restaurant. 
-These three words have all a negative direction in this dimension, especially food has a high negative value. 
-This direction therefore helps to capture the meaning of food. These food related terms also have the same direction as fantast and the opposite direction to bad and disappoint, 
-which indicates that there is a positive sentimant about food.
-
-```{r}
-
+```{r, include = FALSE, message = FALSE, warning = FALSE, eval = FALSE}
+# Create similarity matrix
 similarity_matrix = sim2(word_vectors)
 print("a sample of the similarity matrix across words ")
 similarity_matrix[wordlist[1:12],wordlist[1:12]]
@@ -176,27 +187,537 @@ nwords=nrow(similarity_matrix)
 ```
 
 
-```{r}
-t(word_vectors[wordlist[c(1:13)],])
+```{r, include = FALSE, echo = FALSE, message = FALSE}
 
-
-t(word_vectors[wordlist[c(9, 10, 12)],c(1, 3, 6)])
-
-t(word_vectors[wordlist[c(1, 2, 3, 9, 10, 12)],c(3)])
+table_glove_dim <- as.data.frame(t(word_vectors[wordlist[c(1:3, 5, 6, 8:10)],c(3, 6, 25)]))
+kable(table_glove_dim, caption = "Sample results from GloVe model")
 ```
 
-```{r}
+```{r, echo = FALSE, message = FALSE}
 
-# Show first 50 dimensions
-t(word_vectors[,46])
+# CODE FOR KNITTING
+table_glove_dim <- readRDS(file = "table_glove_dim.RDS")
+kable(table_glove_dim, caption = "Sample results from GloVe model")
+
 ```
+
+
+
+```{r, include = FALSE, message = FALSE, warning = FALSE, eval = FALSE}
+# Example word_vectors matrix (replace with your actual word_vectors matrix)
+word_vectors_mat <- matrix(data = rnorm(100), ncol = 50)
+
+# Get the index of the column with the highest value for row 46
+max_col_index <- which.max(word_vectors[46,])
+
+# Show the column with the highest value for row 46
+max_col <- colnames(word_vectors)[max_col_index]
+print(max_col)
+
+```
+
 
 ## Doing word arithmetic (adding and subtracting vectors)
 
-```{r}
-# Relationships food similar to salse, but including the difference between thai and indian
+Building on the idea that the word embeddings that were acquired through the GloVe model contain the attributes of the words (through which they define the meaning of the words), it follows that it should be possible to add and substract the word embeddings for different words and find new words that share a similar relationship as original words. A famous example is that, starting with the word embedding for "king", one can subtract the word embedding for "man", add the word embedding for "woman" and as a result end up with the word embedding for "queen". Similarly, we use the example of the word embedding for the word "restaurant". Since the restaurant is one of the activities at the amusement park, we explored what word would results if we subtracted the "food" embedding from it and afterwards added the "ride" embedding, seeing as this is another activity at the amusement park. The resulting word embedding was closest to the word embedding for "attract", which makes sense seeing as the rides in the theme park can be considered attractions.
+
+```{r, include = FALSE,message = FALSE, warning = FALSE, eval = FALSE}
+# Relationships 
 comparator = word_vectors["restaur",] - word_vectors["food",] + word_vectors["ride",] 
 similarities = sim2(word_vectors,t(comparator))
 ranking = similarities %>% order(decreasing=TRUE)
 print(as.data.frame(similarities[ranking[top_bottom]], row.names = vocabulary$term[ranking[top_bottom]]))
+word_ar_df <- data.frame("Word" = vocabulary$term[ranking[top_bottom]], "Similarity" = round(similarities[ranking[top_bottom]],2))
+
+kable(word_ar_df[1:5,])
 ```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+word_ar_df <- readRDS(file = "word_ar_df.RDS")
+kable(word_ar_df[1:5,], caption = "Results of word arithmetic")
+```
+
+
+
+```{r}
+
+### CREATE BIGRAMS ###
+
+all_bigrams <- reviews_df[,c("User_ID", "stemmed_reviewtext")] %>% 
+  unnest_tokens(bigram, stemmed_reviewtext, token = "ngrams", n = 2 )
+#This ignores sentences within a review.. could be improved.
+
+head(all_bigrams)
+all_bigrams <- all_bigrams %>%  dplyr::count(bigram, sort = TRUE)
+all_bigrams[1:20,]
+
+sel_bigrams <- all_bigrams %>% filter(n>240)
+sel_bigrams
+
+# Separate the bigrams
+bigrams_sep <-  separate(all_bigrams, bigram, c("word1", "word2"), sep = " ")
+bigrams_sep[1:20,]
+
+
+
+
+### CREATE SKIP NGRAMS ###
+all_skip_ngrams <- reviews_df[,c("User_ID", "stemmed_reviewtext")] %>% 
+  unnest_tokens(trigram, stemmed_reviewtext, token = "ngrams", n = 3 )
+
+delete_middle_word <- function(column) {
+  gsub("\\s+\\w+\\s+", " ", column)
+}
+
+# Apply function to each column
+all_skip_ngrams <- lapply(all_skip_ngrams, delete_middle_word)
+all_skip_ngrams <- as.data.frame(all_skip_ngrams)
+
+all_skip_ngrams <- all_skip_ngrams %>%  dplyr::count(trigram, sort = TRUE)
+all_skip_ngrams[1:20,]
+
+sel_skip_ngrams <- all_skip_ngrams %>% filter(n>100) # 19 skip ngrams
+
+
+
+
+
+### DTM FOR UNI AND BI-GRAMS ###
+
+#Get document term matrix uni-grams
+reviews_df$User_ID <- as.character(reviews_df$User_ID) 
+reviews_df <- distinct(reviews_df, User_ID, .keep_all = TRUE) # Only include unique User_ID's
+reviews_df$User_ID <- as.character(reviews_df$User_ID) %>% as.factor() 
+
+# The factor may have more values than are actually present. 
+# These are removed here, as this causes an error in prcomp
+
+review_dtm <- reviews_df %>% 
+  unnest_tokens(word, stemmed_reviewtext) %>% 
+  dplyr::count(User_ID, word, sort=TRUE) %>% 
+  ungroup() %>%
+  cast_dtm(User_ID,word,n)
+
+#Get document term matrix for bi-grams
+
+review_dtm_bi <- reviews_df %>% 
+  unnest_tokens(bigram, stemmed_reviewtext, token = "ngrams", n = 2) %>% 
+  filter(bigram %in% sel_bigrams$bigram) %>%
+  dplyr::count(User_ID, bigram, sort=TRUE)
+review_dtm_bi$User_ID = as.character(review_dtm_bi$User_ID)
+
+review_dtm_bi <- review_dtm_bi %>% 
+  ungroup() %>%
+  cast_dtm(User_ID, bigram, n)
+
+# DTM for skip ngrams
+
+review_dtm_skip <- reviews_df %>% 
+  unnest_tokens(bigram, stemmed_reviewtext, token = "ngrams", n = 2) %>% 
+  filter(bigram %in% sel_skip_ngrams$trigram) %>%
+  dplyr::count(User_ID, bigram, sort=TRUE)
+review_dtm_skip$User_ID = as.character(review_dtm_skip$User_ID)
+
+review_dtm_skip <- review_dtm_skip %>% 
+  ungroup() %>%
+  cast_dtm(User_ID, bigram, n)
+
+
+### PCA ###
+
+N_factors   <- 6
+pca_results <- prcomp(review_dtm, scale = FALSE, rank. = N_factors)  #get the 20 most important factors
+rawLoadings <- pca_results$rotation[, 1:N_factors] %*% diag(pca_results$sdev, N_factors, N_factors)
+rotated     <- varimax(rawLoadings)
+
+pca_results$rotation <- rotated$loadings
+pca_results$x <- scale(pca_results$x[,1:N_factors]) %*% rotated$rotmat 
+
+# Add the factors to the data frame
+lastcol    <- ncol(reviews_df)
+reviews_df <- data.frame(reviews_df, factor = pca_results$x)
+colnames(reviews_df)[(lastcol+1):(lastcol+N_factors)] <- paste0("factor", 1:N_factors)
+
+# Figure out which words load high on each factor
+factor_labels <- NULL 
+for (j in 1:N_factors) {
+  aa<-abs(pca_results$rotation[,j]) %>% sort(decreasing = TRUE) 
+  factor_labels <- rbind(factor_labels, paste0(names(aa[1:8])))
+}
+factor_labels
+
+
+### COMMON WORDS ###
+
+
+counts <- colSums(as.matrix(review_dtm)) %>% sort(decreasing=TRUE)
+
+lastcol        <- ncol(reviews_df)
+N_words_stored <- 50
+word_labels    <- (names(counts)[1:N_words_stored])
+reviews_df     <- data.frame(reviews_df, words = as.matrix(review_dtm[,word_labels]))
+names(reviews_df)[(lastcol+1):(lastcol+N_words_stored)] <- word_labels
+
+
+
+
+### BIGRAMS ###
+
+
+review_dtm_bi <- as.matrix(review_dtm_bi)
+reviews_df <- cbind(reviews_df, review_dtm_bi[match(reviews_df$User_ID, rownames(review_dtm_bi)),])
+reviews_df[is.na(reviews_df)] <- 0
+
+
+### EMOTIONS ###
+
+
+nrc_emotions  <- get_nrc_sentiment(reviews_df$reviewtext)
+
+reviews_df <- data.frame(reviews_df, nrc_emotions)
+
+
+### SKIP N-GRAMS ###
+
+review_dtm_skip <- as.matrix(review_dtm_skip)
+reviews_df <- cbind(reviews_df, review_dtm_skip[match(reviews_df$User_ID, rownames(review_dtm_skip)),])
+reviews_df[is.na(reviews_df)] <- 0
+
+save(reviews_df , file="reviews_with_predictor_variables.rData")
+
+```
+
+
+
+
+```{r}
+### PREDICTIVE MODELLING ###
+
+colnames(reviews_df) <- gsub(" ", "_", colnames(reviews_df))  # replace spaces in variable names
+reviews_df$Rating <- ifelse(as.numeric(as.factor(reviews_df$Rating))<=3,1,2)
+str(reviews_df$Rating)
+
+N_factors <- 6 # same as line 180
+N_emotions <- 10 # includes pos/neg
+N_words_stored <- 50 # Specified in line 208
+N_bigrams_stored <- 22 # Nr of bigrams in matrix review_dtm_bi / sel_bigrams in line 83
+N_skipgrams_stores <- 17 # Nr of skip ngrams
+
+### feature names and split sample ###
+index <- 8
+factornames  <- colnames(reviews_df)[index:(index+N_factors-1)]
+index <- index + N_factors
+wordnames    <- colnames(reviews_df)[index:(index+N_words_stored-1)]
+index <- index + N_words_stored
+bigramnames <- colnames(reviews_df)[index:(index+N_bigrams_stored-1)]
+index <- index + N_bigrams_stored
+emotionnames <- colnames(reviews_df)[index:(index+N_emotions-1)]
+index <- index + N_emotions
+skipgramnames <- colnames(reviews_df)[index:(index+N_skipgrams_stores-1)]
+index <- index + N_skipgrams_stores
+
+# make a balanced train set
+set.seed(1234)    # fix seed to allow for results to be reproducible
+
+test_data <- sample(1:nrow(reviews_df), size = round(0.1*nrow(reviews_df)))
+train <- setdiff(1:nrow(reviews_df), test_data)
+train_data <- reviews_df[train, ]
+test <- reviews_df[test_data, ]
+
+data_minority <- train_data[train_data$Rating == 1, ]
+data_majority <- train_data[train_data$Rating == 2, ]
+undersample_size <- nrow(data_minority)
+data_majority_undersampled <- data_majority[sample(1:nrow(data_majority), undersample_size), ]
+train <- rbind(data_majority_undersampled, data_minority)
+
+
+
+allFactors <- paste("(", paste(factornames,collapse=" + "), ")")
+allEmotions <- paste("(", paste(emotionnames,collapse=" + "), ")")
+allWords <- paste("(", paste(wordnames,collapse=" + "), ")")
+allBigrams <- paste("(", paste(bigramnames,collapse=" + "), ")")
+allskipgrams <- paste("(", paste(skipgramnames,collapse=" + "), ")")
+allWordsAndBigrams <- paste("(", paste(c(wordnames, bigramnames),collapse=" + "), ")")
+
+
+
+
+### GENERALIZED LINEAR MODEL ###
+f <- paste("(Rating == 2) ~ Nr_of_words + ", allFactors, " + ", allEmotions, " + ", allWords , " + ", allBigrams, "+", allskipgrams)
+glm.all <- glm(f, data=train , family=binomial)
+summary(glm.all)
+
+f <- paste("(Rating == 2) ~ Nr_of_words + ", allFactors, " + ", allWords , " + ", allBigrams, " + ", allskipgrams)
+glm.nodict <- glm(f, data=train , family = binomial)  # No dictionary
+summary(glm.nodict)
+
+f <- paste("(Rating == 2) ~  Nr_of_words + ", allFactors) 
+glm.onlyfactors <- glm(f, data=train, family = binomial) # PCA
+summary(glm.onlyfactors)
+
+f <- paste("(Rating == 2) ~  Nr_of_words + ", allEmotions) 
+glm.onlyemotions <- glm(f, data=train, family = binomial) # NCR
+summary(glm.onlyemotions)
+
+f <- paste("(Rating == 2) ~ Nr_of_words + ", allWords)
+glm.onlywords <- glm(f, data=train, family = binomial) # Words
+summary(glm.onlywords)
+
+f <- paste("(Rating == 2) ~ Nr_of_words + ", allBigrams)
+glm.bigrams <- glm(f, data=train, family = binomial) # Bigrams
+summary(glm.bigrams)
+
+f <- paste("(Rating == 2) ~ Nr_of_words + ", allWords , " + ",allBigrams)
+glm.words_bigrams <- glm(f, data=train, family = binomial) # 
+summary(glm.words_bigrams)
+
+f <- paste("(Rating == 2) ~ Nr_of_words + positive + negative")
+glm.posneg <- glm(f, data=train, family = binomial)
+summary(glm.posneg)
+
+f <- paste("(Rating == 2) ~ Nr_of_words + ", allskipgrams)
+glm.skipgrams <- glm(f, data=train, family = binomial)
+summary(glm.skipgrams)
+
+
+#AIC
+table_AIC <- AIC(glm.all, glm.nodict, glm.onlyfactors, glm.onlyemotions, glm.onlywords, glm.bigrams, glm.words_bigrams, glm.posneg, glm.skipgrams)
+
+
+#Prediction of glm.all
+dat <- data.frame(Predicted_prob=predict(glm.all, type="response"), rating = train$Rating)
+table(dat$Rating)
+predglm <- as.factor(predict(glm.all, type="response") > .5)
+cm_all <- confusionMatrix(data = predglm,  
+                reference = as.factor(train$Rating==2))
+
+acc_all <- data.frame(
+  Accuracy = cm_all$overall[1],
+  Sensitivity = cm_all$byClass[1],
+  Specificity = cm_all$byClass[2],
+  Balanced_Accuracy = cm_all$byClass[11]
+)
+acc_all_t <- data.frame(t(acc_all))
+colnames(acc_all_t) <- c("All")
+
+
+#Prediction of glm.nodict
+predglm <- as.factor(predict(glm.nodict, type="response") > .5)
+cm_nodict <- confusionMatrix(data = predglm,  
+                reference = as.factor(train$Rating==2))
+
+acc_nodict <- data.frame(
+  Accuracy = cm_nodict$overall[1],
+  Sensitivity = cm_nodict$byClass[1],
+  Specificity = cm_nodict$byClass[2],
+  Balanced_Accuracy = cm_nodict$byClass[11]
+)
+acc_nodict_t <- data.frame(t(acc_nodict))
+colnames(acc_nodict_t) <- c("NoDict")
+
+
+
+#Prediction of glm.onlyfactors
+predglm <- as.factor(predict(glm.onlyfactors, type="response") > .5)
+cm_fact <- confusionMatrix(data = predglm,  
+                reference = as.factor(train$Rating==2))
+
+acc_fact <- data.frame(
+  Accuracy = cm_fact$overall[1],
+  Sensitivity = cm_fact$byClass[1],
+  Specificity = cm_fact$byClass[2],
+  Balanced_Accuracy = cm_fact$byClass[11]
+)
+acc_fact_t <- data.frame(t(acc_fact))
+colnames(acc_fact_t) <- c("Only Factors")
+
+
+#Prediction of glm.onlyemotions
+predglm <- as.factor(predict(glm.onlyemotions, type="response") > .5)
+cm_emo <- confusionMatrix(data = predglm,  
+                reference = as.factor(train$Rating==2))
+
+acc_emo <- data.frame(
+  Accuracy = cm_emo$overall[1],
+  Sensitivity = cm_emo$byClass[1],
+  Specificity = cm_emo$byClass[2],
+  Balanced_Accuracy = cm_emo$byClass[11]
+)
+acc_emo_t <- data.frame(t(acc_emo))
+colnames(acc_emo_t) <- c("Only Emotions")
+
+
+#Prediction of glm.onlywords
+predglm <- as.factor(predict(glm.onlywords, type="response") > .5)
+cm_word <- confusionMatrix(data = predglm,  
+                reference = as.factor(train$Rating==2))
+
+acc_word <- data.frame(
+  Accuracy = cm_word$overall[1],
+  Sensitivity = cm_word$byClass[1],
+  Specificity = cm_word$byClass[2],
+  Balanced_Accuracy = cm_word$byClass[11]
+)
+acc_word_t <- data.frame(t(acc_word))
+colnames(acc_word_t) <- c("Only Words")
+
+
+
+#Prediction of glm.bigrams
+predglm <- as.factor(predict(glm.bigrams, type="response") > .5)
+cm_bi <- confusionMatrix(data = predglm,  
+                reference = as.factor(train$Rating==2))
+
+acc_bi <- data.frame(
+  Accuracy = cm_bi$overall[1],
+  Sensitivity = cm_bi$byClass[1],
+  Specificity = cm_bi$byClass[2],
+  Balanced_Accuracy = cm_bi$byClass[11]
+)
+acc_bi_t <- data.frame(t(acc_bi))
+colnames(acc_bi_t) <- c("Bigrams")
+
+
+
+#Prediction of glm.posneg
+predglm <- as.factor(predict(glm.posneg, type="response") > .5)
+cm_posneg <- confusionMatrix(data = predglm,  
+                reference = as.factor(train$Rating==2))
+
+acc_posneg <- data.frame(
+  Accuracy = cm_posneg$overall[1],
+  Sensitivity = cm_posneg$byClass[1],
+  Specificity = cm_posneg$byClass[2],
+  Balanced_Accuracy = cm_posneg$byClass[11]
+)
+acc_posneg_t <- data.frame(t(acc_posneg))
+colnames(acc_posneg_t) <- c("Posneg")
+
+
+
+#Prediction of glm.skipgrams
+predglm <- as.factor(predict(glm.skipgrams, type="response") > .5)
+cm_nskip <- confusionMatrix(data = predglm,  
+                reference = as.factor(train$Rating==2))
+
+acc_nskip <- data.frame(
+  Accuracy = cm_nskip$overall[1],
+  Sensitivity = cm_nskip$byClass[1],
+  Specificity = cm_nskip$byClass[2],
+  Balanced_Accuracy = cm_nskip$byClass[11]
+)
+acc_nskip_t <- data.frame(t(acc_nskip))
+colnames(acc_nskip_t) <- c("Skipgram")
+
+CM_ALL <- cbind(acc_all_t, acc_nodict_t, acc_fact_t, acc_emo_t, acc_word_t, acc_bi_t, acc_posneg_t, acc_nskip_t)
+
+```
+
+
+
+```{r}
+### LASSO FOR LOGIT ###
+# Use optimal model based on AIC = glm.all
+f = paste("~ 0 + Nr_of_words + ", allFactors, " * ", allEmotions, " + ", allWords, " + ", allBigrams, "+", allskipgrams)
+LargeX <- model.matrix(formula(f), data=train)
+LargeTest <- model.matrix(formula(f), data=test)
+
+y <- as.factor(train$Rating)
+cvfit.glm <- cv.glmnet(LargeX, y, family="binomial", alpha = 1)
+lasso.glm <- glmnet(LargeX, y, family="binomial", alpha = 1)
+
+plot(lasso.glm)
+plot(cvfit.glm)
+
+par <- predict(lasso.glm, s = cvfit.glm$lambda.min, type='coefficients')
+nnzero(par)
+length(par)
+
+lasso.glm.pred <- predict(lasso.glm, s = cvfit.glm$lambda.1se, type="response", newx = LargeX)
+lasso.glm.pred.test <- predict(lasso.glm, s = cvfit.glm$lambda.1se,type="response", newx = LargeTest)
+
+
+pred_train <- ifelse(lasso.glm.pred > 0.5, 1, 0)
+table(Actual = train$Rating, Predicted = pred_train)
+
+pred_test <- ifelse(lasso.glm.pred.test > 0.5, 2, 1)
+
+cm_lasso <- confusionMatrix(data = as.factor(pred_test),  
+                reference = as.factor(test$Rating))
+
+acc_lasso <- data.frame(
+  Accuracy = cm_lasso$overall[1],
+  Sensitivity = cm_lasso$byClass[1],
+  Specificity = cm_lasso$byClass[2],
+  Balanced_Accuracy = cm_lasso$byClass[11]
+)
+acc_lasso_t <- data.frame(t(acc_lasso))
+colnames(acc_lasso_t) <- c("Lasso")
+
+best_lambda <- cvfit.glm$lambda.min
+
+
+### RANDOM FOREST ###
+
+f = paste("as.factor(Rating) ~ Nr_of_words + ", allFactors, " * ", allEmotions, " + ", allWords, " + ", allBigrams, "+", allskipgrams)
+rf = randomForest(formula(f),  
+                  ntree = 100,
+                  data = train)
+
+varImpPlot(rf,  
+           sort = TRUE,
+           n.var = 15,
+           main = "Top 15 - Variable Importance")
+
+
+#out of bag
+pred.alt <- predict(rf)
+confusionMatrix(data = pred.alt,  
+                reference = as.factor(train$Rating))
+
+#estimation sample
+pred.est <- predict(rf, train)
+confusionMatrix(data = pred.est,  
+                reference = as.factor(train$Rating))
+
+#test sample
+pred.test <- predict(rf, test)
+cm_rf <- confusionMatrix(data = pred.test,  
+                reference = as.factor(test$Rating))
+
+
+acc_rf <- data.frame(
+  Accuracy = cm_rf$overall[1],
+  Sensitivity = cm_rf$byClass[1],
+  Specificity = cm_rf$byClass[2],
+  Balanced_Accuracy = cm_rf$byClass[11]
+)
+acc_rf_t <- data.frame(t(acc_rf))
+colnames(acc_rf_t) <- c("RF")
+
+CM_GLM_RF <- cbind(acc_all_t, acc_lasso_t, acc_rf_t)
+```
+
+
+
+
+# Appendix B
+
+```{r, echo = FALSE}
+kable(table_AIC, caption = 'AIC score of GLM', digits = 2)
+kable(CM_ALL, caption = 'Accuracy of GLM', digits = 2 )
+kable(CM_GLM_RF, caption = 'Accuracy of GLM, LASSO AND RF', digits = 2)
+
+
+varImpPlot(rf,  
+           sort = TRUE,
+           n.var = 10,
+           main = "Figure 1: Top 10 - Variable Importance")
+
+
+```
+
+
+
+
+
