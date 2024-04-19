@@ -1,0 +1,202 @@
+title: "Assignment 2 Text Analytics"
+author: "Robbert Batenburg"
+date: "2024-04-17"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+skip_slow <- TRUE
+
+# Set the maximum number of rows to be printed
+options(max.print = 10000)
+
+library(dplyr)
+library(tidyr)
+library(text2vec)
+library(tidytext)
+library(ggplot2)
+library(SnowballC)
+
+```
+
+```{r data}
+#load data
+setwd("C:/Users/robbe/OneDrive/uni/Master DSMA/Text Analysis/Assignment 2 RMarkdown")
+
+# Load data
+#disney_unique <- load(file = "disney_stemmed_new.RData")
+```
+
+
+```{r}
+
+# Create small dataset to work with
+#reviews_df <- disney_unique[disney_unique$Branch == "Disneyland_HongKong",]
+#reviews_df <- reviews_df[1:10000,]
+#reviews_df$Description <- reviews_df$Review_Text
+
+```
+
+## Word stemming
+
+```{r , echo=FALSE, message=FALSE}
+
+# Apply word stemming
+#for (j in 1:nrow(reviews_df)) {
+  # Also remove stop words
+#  stemmed_description<-  anti_join((reviews_df[j,] %>% unnest_tokens(word,Description, drop=FALSE,to_lower=TRUE) ),stop_words)
+
+#    stemmed_description<-  ((reviews_df[j,] %>% unnest_tokens(word,Description, drop=FALSE,to_lower=TRUE) ))
+#    stemmed_description<-(wordStem(stemmed_description[,"word"], language = "porter"))
+
+    # Add to dataframe
+#    reviews_df[j, "stemmed_reviewtext"] <- paste(stemmed_description, collapse = " ")
+
+#}
+#print("done")
+
+#stemmed_reviews_df_with_stop <- reviews_df
+
+#save(stemmed_reviews_df_with_stop , file = "stemmed_reviews_df_with_stop.Rdata")
+
+
+  load(file = "stemmed_reviews_df_with_stop.Rdata")
+  stemmed_reviews_df_with_stop -> reviews_df
+
+```
+
+
+```{r}
+# create iterator over list of text items
+it = itoken(reviews_df$stemmed_reviewtext)
+
+#create the vocabulary and remove infrequent words
+vocabulary = create_vocabulary(it)
+vocabulary = prune_vocabulary(vocabulary, term_count_min = 100 )
+
+#create vector version of the vocabulary: speeds up allocation/search process
+v_vect = vocab_vectorizer(vocabulary)
+# create term co-occurrence matrix (window of 8)
+tcm = create_tcm(it, v_vect, skip_grams_window = 8L, skip_grams_window_context = "symmetric", weights = rep(1,8) ) 
+```
+
+
+```{r}
+#Create wordlist
+
+wordlist = c("food", "lunch" ,  "restaur", "hotel", "magic", "wait", "attract", "parad", "bad", "disappoint", "ride", "fantast", "children")
+
+```
+
+
+# Create the GloVe model
+
+```{r}
+
+glove_model = GlobalVectors$new( x_max = 1000 , rank = 50) 
+# use maximum 1000 word co-occurrences in weight function
+# rank is the desired dimension for latent vectors
+```
+
+
+# Fit model and obtain results.
+
+# note that the glove_model construct is now also changed!
+
+```{r}
+# Fit the model using 200 stochastic gradient descent (SGD) iterations
+word_vectors = glove_model$fit_transform(tcm, n_iter = 200)
+
+word_vectors_backup <- word_vectors # save as backup
+
+```
+
+
+```{r}
+
+# Show first 50 dimensions
+t(word_vectors[wordlist[1:4],1:50])
+
+```
+
+
+# Determine pairwise word similarities
+
+```{r}
+
+similarity_matrix = sim2(word_vectors)
+print("a sample of the similarity matrix across words ")
+similarity_matrix[wordlist,wordlist]
+nwords=nrow(similarity_matrix)
+
+```
+
+
+## Finding similar words
+
+```{r}
+# vector to select first 10 and last 10 words
+top_bottom=c(1:10,(nwords-9):nwords)
+```
+
+```{r}
+# Select words with top 10 highest and lowest similarity score to curri
+cc=sort(similarity_matrix[,"fantast"], decreasing=TRUE)
+print(data.frame(cc[top_bottom]))
+
+```
+
+
+
+
+
+
+
+### REPORT
+
+Table 1 shows a similarity matrix of a sample of words. These similarities are measure across a range of dimensions. This shows that restaurant is very similar to lunch.
+This is to be expected because a restaurant sells lunch. These similarity scores are determined by many different dimensions, some of which are shown in Table 2. 
+When words are similar to each other in a dimension, the values for this dimension are either both positive or both negative. 
+Table 3 shows dimensions where bad and disappoint have the same direction and the opposite direction to fantast. 
+These three dimensions can help capture the different between positive and negative sentiment. 
+Table 4 shows one of the previous directions together with the values for food, lunch and restaurant. 
+These three words have all a negative direction in this dimension, especially food has a high negative value. 
+This direction therefore helps to capture the meaning of food. These food related terms also have the same direction as fantast and the opposite direction to bad and disappoint, 
+which indicates that there is a positive sentimant about food.
+
+```{r}
+
+similarity_matrix = sim2(word_vectors)
+print("a sample of the similarity matrix across words ")
+similarity_matrix[wordlist[1:12],wordlist[1:12]]
+nwords=nrow(similarity_matrix)
+```
+
+
+```{r}
+t(word_vectors[wordlist[c(1:13)],])
+
+
+t(word_vectors[wordlist[c(9, 10, 12)],c(1, 3, 6)])
+
+t(word_vectors[wordlist[c(1, 2, 3, 9, 10, 12)],c(3)])
+```
+
+```{r}
+
+# Show first 50 dimensions
+t(word_vectors[,46])
+```
+
+## Doing word arithmetic (adding and subtracting vectors)
+
+```{r}
+# Relationships food similar to salse, but including the difference between thai and indian
+comparator = word_vectors["restaur",] - word_vectors["food",] + word_vectors["ride",] 
+similarities = sim2(word_vectors,t(comparator))
+ranking = similarities %>% order(decreasing=TRUE)
+print(as.data.frame(similarities[ranking[top_bottom]], row.names = vocabulary$term[ranking[top_bottom]]))
+```
