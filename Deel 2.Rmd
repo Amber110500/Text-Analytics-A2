@@ -1,0 +1,39 @@
+---
+title: "Text deel 2"
+author: "Robbert Batenburg, Amber Dalhuisen, Floris van Haarst & Marijn van der Werff"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("C:/Users/marij/OneDrive/Documenten/Data Science Master/Text Mining")
+```
+
+## Predictive Analysis
+The aim of the predictive analysis was to predict the rating of Disneyland HongKong using various features, namely unigrams, bigrams, skip-grams, sentiment scores and PCA factors. Preprocessing of the data consisted of omitting words that occur in less than 1% of the data as well as words that appear in all of the reviews, as these words will not provide very valuable insights (e.g. “hongkong”, “park” and “disneyland”). Firstly, for the unigrams, the fifty most common words in the dataset were included. For the bigrams and skip-grams, pairs of words that appeared more than 240 times and 100 times respectively, were included into the model. Whereas bigrams are two words positioned next to each other, skip-grams have one word separating them. Additionally, identifiers for emotions using the NRC dictionary were added to the model. Lastly, PCA was conducted using a predetermined number of six factors based on our previous analysis of the data. As a reference, all tables and figures for this analysis can be found in Appendix B. 
+This resulted in a total of 105 features that were used to predict the rating. The rating was identified as happy (0-3) or not happy (4-5). Multiple general linear models (GLM) were set up using all or a subset of these features. To avoid overfitting and improve the model, regularization was applied to the best performing GLM model. As a reference, Random Forest was also executed, to find the optimal model.
+
+Appendix B.1 shows the AIC scores of these models. The AIC score is an estimator of the prediction error, indicating a lower score is preferred. The lowest score is for the model based solely on the emotions, with an AIC score of 4725.95. This is closely followed by the model including all features, which has an AIC score of 4741.44. To assess the models further, Appendix B.2 shows a selection of the confusion matrix results of the models, including the (balanced) accuracy, sensitivity and specificity. These results show that the model with all features performs best with a balanced accuracy of 67% compared to 64% for the model based only on emotions. Therefore, this model was chosen as the optimal model. Interpreting the results from this model, factor 6 has a significant positive effect on rating. Additionally, the majority of the emotions have a significant effect on rating. Anger, disgust and sadness have a negative effect on rating which is quite rational. On the other hand, anticipation and joy have a positive effect. Some interesting insights include that fear has a positive effect on rating and surprise and trust have a negative effect on the rating. This can be explained because positive word count increases when trust or surprise words appear. The net effect is therefore still positive, which is larger than the negative, additional effects of trust and surprise. The same logic applies to fear, although the other way around. Furthermore, words such as parade, firework (show), fast pass and mickey mouse have a positive effect on the rating. On the other hand, time, people and ‘expect’ are negatively associated. Interestingly, queue has a positive effect which is not in line with the negative effect of time on rating. People seem to associate waiting in line as positive. These interpretations are all made ceteris paribus.
+
+Lasso was then performed on this model to simplify and possibly enhance the model. The model performed with a balanced accuracy of 67%, slightly lower than the previous model (see Appendix B.3). However, as it only uses few features to predict, it is more interpretable. The non-zero features after cross validating the lambda are  "factor5",  "anger",  "anticipation", "disgust", "fear", "joy" , "sadness", "negative", "peopl", "grizzli.gulch", "lion.king", "mystic.manor", "night.parad", "parad.firework", "stai_hotel" and  "night_firework". Interestingly, most emotions were used to predict the model, reaffirming the importance of this analysis.
+
+The Random Forest model was chosen to provide insights in the data without focusing on individual predictions. As shown in Appendix B.3, the balanced accuracy is 63% which is significantly lower than the GLM model. Additionally, the most important features in the Random Forest model are shown in Appendix B.4, which include all PCA factors, the number of words and emotion classifiers. Emotions are important in all models, but PCA factors and the number of words were not significant in the GLM, which would require further analysis. Further research could include a partial dependence plot to identify the effect of the features on the rating. 
+
+All in all, GLM without lasso and with all features performed best. However, applying Lasso does increase simplicity while barely decreasing in accuracy, so it might therefore be the preferred model.
+
+\newpage
+## Appendix B
+```{r cars, echo = FALSE}
+AIC <- readRDS(AIC_scores.rds)
+AIC
+GLM <- readRDS(GLM_scores.rds)
+GLM
+ALL <- readRDS(ALLMODELS.rds)
+ALL
+RF <- readRDS(RFvarimp.rds)
+RF
+
+```
+
+
